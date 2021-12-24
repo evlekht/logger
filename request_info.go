@@ -3,11 +3,12 @@ package logger
 import (
 	"context"
 	"net/http"
+	"strings"
+
+	"github.com/valyala/fasthttp"
 )
 
-type contextKey string
-
-const requestInfoKey contextKey = "request_info"
+const requestInfoKey = "request_info" // no custom type cause of fasthttp.RequestCtx
 
 type requestInfo struct {
 	RequestID int64
@@ -21,27 +22,45 @@ func MakeRequestInfoContext(ctx context.Context, request *http.Request) context.
 	reqInfo := &requestInfo{}
 	reqInfo.RequestID = getRequestID(ctx, request)
 
-	if request != nil {
-		reqInfo.URL = request.URL.String()
-		reqInfo.Method = request.Method
-		reqInfo.Headers = request.Header
+	switch requestContext := ctx.(type) {
+	case *fasthttp.RequestCtx:
+		reqInfo.Body = requestContext.Request.Body()
 
-		if request.GetBody != nil {
-			if body, err := request.GetBody(); err != nil {
-				reqInfo.Body = []byte("error getting body")
-			} else {
-				if _, err := body.Read(reqInfo.Body); err != nil {
-					reqInfo.Body = []byte("error reading body")
+		headers := make(map[string][]string)
+		requestContext.Request.Header.VisitAll(func(key []byte, value []byte) {
+			headers[string(key)] = strings.Split(string(value), ",")
+		})
+
+		reqInfo.URL = string(requestContext.URI().Path())
+		reqInfo.Method = string(requestContext.Method())
+		reqInfo.Headers = headers
+
+		requestContext.SetUserValue(requestInfoKey, reqInfo)
+		return requestContext
+
+	default:
+		if request != nil {
+			reqInfo.URL = request.URL.String()
+			reqInfo.Method = request.Method
+			reqInfo.Headers = request.Header
+
+			if request.GetBody != nil {
+				if body, err := request.GetBody(); err != nil {
+					reqInfo.Body = []byte("error getting body")
+				} else {
+					if _, err := body.Read(reqInfo.Body); err != nil {
+						reqInfo.Body = []byte("error reading body")
+					}
 				}
 			}
 		}
-	}
 
-	if ctx == nil {
-		ctx = context.Background()
-	}
+		if ctx == nil {
+			ctx = context.Background()
+		}
 
-	return context.WithValue(ctx, requestInfoKey, reqInfo)
+		return context.WithValue(ctx, requestInfoKey, reqInfo)
+	}
 }
 
 func getRequestInfo(ctx context.Context) *requestInfo {
